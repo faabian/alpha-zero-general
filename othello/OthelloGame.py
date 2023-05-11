@@ -92,9 +92,9 @@ class OthelloGame(Game):
     def stringRepresentation(self, board):
         return board.tostring()
 
-    def stringRepresentationReadable(self, board):
-        board_s = "".join(self.square_content[square] for row in board for square in row)
-        return board_s
+    def stringRepresentationReadable(self, board, human: bool = True):
+        sep = "" if human else " "
+        return sep.join(self.square_content[square] for row in board for square in row)
 
     def getScore(self, board, player):
         b = Board(self.n)
@@ -117,3 +117,6 @@ class OthelloGame(Game):
             print("|")
 
         print("-----------------------")
+
+    def to_text(self, board):
+        return self.stringRepresentationReadable(board, human=False)

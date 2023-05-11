@@ -1,5 +1,7 @@
 import logging
 
+import numpy as np
+
 import coloredlogs
 
 from Coach import Coach
@@ -13,13 +15,11 @@ coloredlogs.install(level="INFO")  # Change this to DEBUG to see more info.
 
 args = dotdict(
     {
-        "numIters": 1000,
-        "numEps": 100,  # Number of complete self-play games to simulate during a new iteration.
+        "numIters": 1,
+        "numEps": 1,  # Number of complete self-play games to simulate during a new iteration.
         "tempThreshold": 15,  #
-        "updateThreshold": 0.6,  # During arena playoff, new neural net will be accepted if threshold or more of games are won.
         "maxlenOfQueue": 200000,  # Number of game examples to train the neural networks.
         "numMCTSSims": 25,  # Number of games moves for MCTS to simulate.
-        "arenaCompare": 40,  # Number of games to play during arena play to determine if new net will be accepted.
         "cpuct": 1,
         "checkpoint": "./temp/",
         "load_model": True,
@@ -28,9 +28,9 @@ args = dotdict(
             "6x6_153checkpoints_best.pth.tar",
         ),
         # ('/dev/models/8x100x50','best.pth.tar'),
-        "numItersForTrainExamplesHistory": 1,  # do not retrain on and save older epochs in the current epoch
-        # 20,
-        "seed": 42,
+        "seed": 44,
+        "human": False,  # output MCTS traces for humans or transformer
+        "verbose": True,  # print traces
     }
 )
 
@@ -57,12 +57,8 @@ def main():
     log.info("Loading the Coach...")
     c = Coach(g, nnet, args)
 
-    if args.load_model:
-        log.info("Loading 'trainExamples' from file...")
-        c.loadTrainExamples()
-
-    log.info("Starting the learning process 🎉")
-    c.learn()
+    log.info("Starting self-play 🎉")
+    c.save_selfplay()
 
 
 if __name__ == "__main__":
