@@ -16,7 +16,7 @@ coloredlogs.install(level="INFO")  # Change this to DEBUG to see more info.
 args = dotdict(
     {
         "numIters": 1,
-        "numEps": 1,  # Number of complete self-play games to simulate during a new iteration.
+        "numEps": 10,  # Number of complete self-play games to simulate during a new iteration.
         "tempThreshold": 15,  #
         "maxlenOfQueue": 200000,  # Number of game examples to train the neural networks.
         "numMCTSSims": 25,  # Number of games moves for MCTS to simulate.
@@ -28,14 +28,18 @@ args = dotdict(
             "6x6_153checkpoints_best.pth.tar",
         ),
         # ('/dev/models/8x100x50','best.pth.tar'),
-        "seed": 44,
+        "seed": 144,  # 44 for train, 144 for eval, 244 for ppl test
         "human": False,  # output MCTS traces for humans or transformer
-        "verbose": True,  # print traces
+        "verbose": False,  # print traces
+        # for parallel_gen:
+        "exp_name": "traces_test",
+        "n_jobs": 80,
+        "local": False,
     }
 )
 
 
-def main():
+def selfplay(args):
     log.info(f"Setting seed = {args.seed}")
     np.random.seed(args.seed)
     log.info("Loading %s...", Game.__name__)
@@ -62,4 +66,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    selfplay(args)

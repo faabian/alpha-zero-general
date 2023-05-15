@@ -3,6 +3,8 @@ import math
 
 import numpy as np
 
+from parse import parse_mcts_actions
+
 EPS = 1e-8
 
 log = logging.getLogger(__name__)
@@ -33,24 +35,50 @@ class MCTS:
         self.children = (
             {}
         )  # for each board s, stores its children in the MCTS tree (with their boards s) as a list
-        self.current_board = None  # keep track of the search tree root
         self.vs = (
             {}
         )  # save evaluations to simulate first encounters in the case of diamond merging
         self.edge_targets = {}  # for each (s, a), its end node s'
         self.traces = []  # collect outputs of simulations
-        self._trace = ""  # current simulation trace
+        self._trace_state = ""  # current simulation trace: search state
+        self._trace_actions = ""  # current simulation trace: search actions
+        self.reset_trace()
         self.search_start = "__ROOT__"  # starting state of the search, for restarting
+        self._visited = set()  # for preorder()
 
-    def trace(self, s, end="\n"):
-        self._trace += s + end
+    def reset_trace(self):
+        self._trace_state = "STATE:\n"
+        self._trace_actions = ""
+
+    def submit_trace(self):
+        # to make `_trace_state` a prompt for `_trace_actions`, append "ACTIONS:\n" to `_trace_state`
+        self.trace("ACTIONS:", to="state")
+        self.traces.append((self._trace_state, self._trace_actions))
+        self.reset_trace()
+
+    @property
+    def trace_empty(self):
+        return self._trace_state == "" and self._trace_actions == ""
+
+    def trace(self, s, to="state", end="\n"):
+        assert to in ["state", "actions"]
+        if to == "state":
+            self._trace_state += s + end
+        else:
+            self._trace_actions += s + end
         if self.args.verbose:
             print(s, end=end)
 
-    def getActionProb(self, canonicalBoard, temp=1):
+    def board_str(self, board):
+        return self.game.stringRepresentationReadable(board, human=self.args.human)
+
+    def getActionProb(self, canonicalBoard, temp=1, lm=None):
         """
         This function performs numMCTSSims simulations of MCTS starting from
         canonicalBoard.
+
+        If `lm` is set, call `lm` on MCTS state prompt to compute an MCTS action string
+        which is parsed t0n retrieve the node expansion and updates.
 
         Returns:
             probs: a policy vector where the probability of the ith action is
@@ -59,11 +87,12 @@ class MCTS:
         for i in range(self.args.numMCTSSims):
             # print("=" * 20 + f"Simulation {i} " + "=" * 20)
             self.last_s = "__ROOT__"
-            self.search(canonicalBoard)
+            if lm is None:
+                self.search(canonicalBoard)
+            else:
+                self.lm_search(canonicalBoard, lm=lm)
 
-        s = self.game.stringRepresentationReadable(
-            canonicalBoard, human=self.args.human
-        )
+        s = self.board_str(canonicalBoard)
         counts = [
             self.Nsa[(s, a)] if (s, a) in self.Nsa else 0
             for a in range(self.game.getActionSize())
@@ -104,8 +133,16 @@ class MCTS:
                 f"{sid:03} {a:02} {sid2:03} {self.Nsa[(s, a)]:03} {self.Qsa[(s, a)]:+5.3f}"
             )
 
+    def preorder(self, f, s):
+        """Preorder traversal for graphs - maintains a set of visited nodes to prevent cycles."""
+        self._visited = set()
+        self._preorder(f, s)
+
     def _preorder(self, f, s):
+        if s in self._visited:
+            return
         f(s)
+        self._visited.add(s)
         for c in self.children.get(s, []):
             self._preorder(f, c)
 
@@ -115,40 +152,53 @@ class MCTS:
             return
 
         def assign_local_id(s):
-            print(
-                s,
-                self.board_to_id[s],
-                # self.children.get(s, []),
-            )
             self.local_id[s] = len(self.local_id)  # assign next local id
 
-        self._preorder(assign_local_id, s)
+        self.preorder(assign_local_id, s)
 
     def print_reachable_tree(self, s):
         """Prints the reachable part of the MCTS tree from the current board position `s`."""
         if not s in self.local_id:
             return
-        self._preorder(self.print_node, s)
+        self.preorder(self.print_node, s)
 
     def print_reachable_edges(self, s):
         for s, a in self.Qsa:
             if s in self.local_id:
                 self.print_edge(s, a)
 
-    def search(self, canonicalBoard, compute_local_tree=True):
-        s = self.game.stringRepresentationReadable(
-            canonicalBoard, human=self.args.human
-        )
-        self.search_start = canonicalBoard
-        if compute_local_tree:
-            self.compute_reachable_tree(s)
-        self.print_reachable_tree(s)
-        self.print_reachable_edges(s)
-        self.current_board = s
-        result = self._search(canonicalBoard)
-        self.traces.append(self._trace)
-        self._trace = ""
-        return result
+    def search(self, canonicalBoard):
+        while True:
+            try:
+                s = self.board_str(canonicalBoard)
+                self.search_start = canonicalBoard
+                self.compute_reachable_tree(s)
+                self.print_reachable_tree(s)
+                self.print_reachable_edges(s)
+                result = self._search(canonicalBoard)
+                self.submit_trace()
+                return result
+            except RuntimeError:
+                self.reset_trace()
+                # self.children has been updated, so the next attempt is more likely to succeed
+
+    def lm_search(self, canonicalBoard, lm):
+        while True:
+            try:
+                s = self.board_str(canonicalBoard)
+                self.compute_reachable_tree(s)
+                self.print_reachable_tree(s)
+                self.print_reachable_edges(s)
+                actions_str = lm(self._trace_state + "ACTIONS:\n")
+                _, expand, updates = parse_mcts_actions()  # vists not needed
+                self.trace(actions_str, to="actions")
+                self.lm_step(expand, updates)
+                result = self._search(canonicalBoard)
+                self.submit_trace()
+                return result
+            except RuntimeError:
+                self.reset_trace()
+                # self.children has been updated, so the next attempt is more likely to succeed
 
     def _register_node(self, s):
         assert s not in self.board_to_id
@@ -175,10 +225,7 @@ class MCTS:
         Returns:
             v: the negative of the value of the current canonicalBoard
         """
-
-        s = self.game.stringRepresentationReadable(
-            canonicalBoard, human=self.args.human
-        )
+        s = self.board_str(canonicalBoard)
         # Diamond Merging:
         # `self.children` and `self.local_id` maintain a local search tree that needs to be
         # extended if `s` is known in the global search tree, but with another path from the root.
@@ -188,17 +235,15 @@ class MCTS:
         if s in self.board_to_id and not s in self.children.get(self.last_s, []):
             # add the node to the current local tree
             self.children[self.last_s] = self.children.get(self.last_s, []) + [s]
-            print(self.children[self.last_s])
+            # print(self.last_s, self.children[self.last_s])
             self.edge_targets[(self.last_s, self.last_a)] = s
 
-            # abort and restart the current search
+            # abort and restart the current search in the try/catch loop of search()
+            raise RuntimeError()
 
-            self._trace = ""
-            self.trace(
-                f"RESTARTED at: {s} last: {self.last_s} start: {self.game.stringRepresentationReadable(self.search_start)}"
-            )
-            self.search(self.search_start, compute_local_tree=True)
-
+            # self.trace(
+            #     f"RESTARTED at: {s} last: {self.last_s} start: {self.board_str(self.search_start)}"
+            # )
             # if self.args.human:
             #     self.trace += f"simulate expand {self.local_id[self.last_s]:3} {self.last_a:2} {s} v={self.vs[s]:+5.3f}\n"
             # else:
@@ -207,9 +252,9 @@ class MCTS:
         # print(f"visiting {s2} N={self.Ns.get(s, 0)}")
         if s in self.local_id:
             if self.args.human:
-                self.trace(f"visit {self.local_id[s]:3}")
+                self.trace(f"visit {self.local_id[s]:3}", to="actions")
             else:
-                self.trace(f"visit {self.local_id[s]:03}")
+                self.trace(f"visit {self.local_id[s]:03}", to="actions")
 
         # self.print_node(s)
         # print(self.children[s])
@@ -220,6 +265,11 @@ class MCTS:
             # terminal node
             if not s in self.board_to_id:
                 self._register_node(s)
+
+            if self.args.human:
+                self.trace(f"terminal {s} v={-self.Es[s]:+2}", to="actions")
+            else:
+                self.trace(f"terminal {s} {-self.Es[s]:+2}", to="actions")
 
             return -self.Es[s]
 
@@ -247,11 +297,13 @@ class MCTS:
             self._register_node(s)
             if self.args.human:
                 self.trace(
-                    f"expand {self.local_id[self.last_s]:3} {self.last_a:2} {s} v={v:+5.3f}"
+                    f"expand {self.local_id[self.last_s]:3} {self.last_a:2} {s} v={v:+5.3f}",
+                    to="actions",
                 )
             else:
                 self.trace(
-                    f"expand {self.local_id[self.last_s]:03} {self.last_a:02} {s} {v:+5.3f}"
+                    f"expand {self.local_id[self.last_s]:03} {self.last_a:02} {s} {v:+5.3f}",
+                    to="actions",
                 )
             return -v
 
@@ -297,11 +349,42 @@ class MCTS:
         # print(f"update {self.board_to_id[s]:3} N={self.Ns[s]:3}")
         if self.args.human:
             self.trace(
-                f"update {self.local_id[s]:3} {a:2} Ns={self.Ns[s]:3} Nsa={self.Nsa[(s, a)]:3} Qsa={self.Qsa[(s, a)]:+5.3f}"
+                f"update {self.local_id[s]:3} {a:2} Ns={self.Ns[s]:3} Nsa={self.Nsa[(s, a)]:3} Qsa={self.Qsa[(s, a)]:+5.3f}",
+                to="actions",
             )
         else:
             self.trace(
-                f"update {self.local_id[s]:03} {a:02} {self.Ns[s]:03} {self.Nsa[(s, a)]:03} {self.Qsa[(s, a)]:+5.3f}"
+                f"update {self.local_id[s]:03} {a:02} {self.Ns[s]:03} {self.Nsa[(s, a)]:03} {self.Qsa[(s, a)]:+5.3f}",
+                to="actions",
             )
 
         return -v
+
+    def lm_step(self, expand, updates):
+        # TODO: terminal nodes
+        if expand:
+            node, action, s, _ = expand
+            last_s = self.local_id[node]
+            if s in self.board_to_id:
+                # add known node to the current local tree
+                self.children[last_s] = self.children.get(last_s, []) + [s]
+                # print(self.last_s, self.children[self.last_s])
+                self.edge_targets[(last_s, action)] = s
+                # abort and restart the current search in the try/catch loop of lm_search()
+                raise RuntimeError()
+            else:
+                # register new node
+                # set parent for _register_node
+                self.last_s = last_s
+                self.last_a = action
+                # note: v is not needed, only implicit in updates
+                self.Ns[s] = 0
+                self._register_node(s)
+
+        for update in updates:
+            assert update is not None
+            node, action, Ns, Nsa, Qsa = update
+            s = self.local_id[node]
+            self.Ns[s] = Ns
+            self.Nsa[(s, action)] = Nsa
+            self.Qsa[(s, action)] = Qsa

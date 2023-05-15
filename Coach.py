@@ -177,8 +177,14 @@ class Coach:
                     iterationTrainExamples += self.executeEpisode()
                     self.traces.extend(
                         [
-                            {"text": t, "iteration": i, "episode": j}
-                            for t in self.mcts.traces
+                            {
+                                "prompt": state,
+                                "target": actions,
+                                "text": state + actions,  # state ends in '\n'
+                                "iteration": i,
+                                "episode": j,
+                            }
+                            for state, actions in self.mcts.traces
                         ]
                     )
 
@@ -187,6 +193,7 @@ class Coach:
             self.trainExamplesHistory = [iterationTrainExamples]
             self.saveTrainExamples(i - 1)
             self.save_traces(i - 1)
+            self.traces = []
 
     def getCheckpointFile(self, iteration):
         return f"checkpoint_{iteration:03}.pth.tar"
